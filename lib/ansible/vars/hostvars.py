@@ -62,7 +62,11 @@ class HostVars(collections.Mapping):
         self._inventory = inventory
 
     def _find_host(self, host_name):
-        return self._inventory.get_host(host_name)
+        if host_name in C.LOCALHOST and self._inventory.localhost:
+            host = self._inventory.localhost
+        else:
+            host = self._inventory.get_host(host_name)
+        return host
 
     def __getitem__(self, host_name):
         host = self._find_host(host_name)
@@ -99,3 +103,9 @@ class HostVars(collections.Mapping):
     def __len__(self):
         return len(self._inventory.get_hosts(ignore_limits_and_restrictions=True))
 
+    def __repr__(self):
+        out = {}
+        for host in self._inventory.get_hosts(ignore_limits_and_restrictions=True):
+            name = host.name
+            out[name] = self.get(name)
+        return repr(out)

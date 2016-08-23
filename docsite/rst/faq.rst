@@ -23,7 +23,7 @@ How do I handle different machines needing different user accounts or ports to l
 
 Setting inventory variables in the inventory file is the easiest way.
 
-.. include:: ansible_ssh_changes_note.rst
+.. include:: ../rst_common/ansible_ssh_changes_note.rst
 
 For instance, suppose these hosts have different usernames and ports::
 
@@ -329,7 +329,7 @@ be applied to single tasks only, once a playbook is completed.
 .. _interpolate_variables:
 
 When should I use {{ }}? Also, how to interpolate variables or dynamic variable names
-++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 
 A steadfast rule is 'always use {{ }} except when `when:`'.
 Conditionals are always run through Jinja2 as to resolve the expression,

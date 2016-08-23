@@ -38,7 +38,7 @@ import sys
 
 from ansible import constants as C
 from ansible.cli import CLI
-from ansible.errors import AnsibleError, AnsibleOptionsError
+from ansible.errors import AnsibleError
 
 from ansible.executor.task_queue_manager import TaskQueueManager
 from ansible.inventory import Inventory
@@ -301,7 +301,7 @@ class ConsoleCLI(CLI, cmd.Cmd):
     def do_become(self, arg):
         """Toggle whether plays run with become"""
         if arg:
-            self.options.become_user = arg
+            self.options.become = C.mk_boolean(arg)
             display.v("become changed to %s" % self.options.become)
             self.set_prompt()
         else:
@@ -331,6 +331,22 @@ class ConsoleCLI(CLI, cmd.Cmd):
             display.v("become_method changed to %s" % self.options.become_method)
         else:
             display.display("Please specify a become_method, e.g. `become_method su`")
+
+    def do_check(self, arg):
+        """Toggle whether plays run with check mode"""
+        if arg:
+            self.options.check = C.mk_boolean(arg)
+            display.v("check mode changed to %s" % self.options.check)
+        else:
+            display.display("Please specify check mode value, e.g. `check yes`")
+
+    def do_diff(self, arg):
+        """Toggle whether plays run with diff"""
+        if arg:
+            self.options.diff = C.mk_boolean(arg)
+            display.v("diff mode changed to %s" % self.options.diff)
+        else:
+            display.display("Please specify a diff value , e.g. `diff yes`")
 
     def do_exit(self, args):
         """Exits from the console"""
@@ -419,13 +435,19 @@ class ConsoleCLI(CLI, cmd.Cmd):
         self.inventory = Inventory(loader=self.loader, variable_manager=self.variable_manager, host_list=self.options.inventory)
         self.variable_manager.set_inventory(self.inventory)
 
-        if len(self.inventory.list_hosts(self.pattern)) == 0:
+        no_hosts = False
+        if len(self.inventory.list_hosts()) == 0:
             # Empty inventory
+            no_hosts = True
             display.warning("provided hosts list is empty, only localhost is available")
 
         self.inventory.subset(self.options.subset)
+        hosts = self.inventory.list_hosts(self.pattern)
+        if len(hosts) == 0 and not no_hosts:
+            raise AnsibleError("Specified hosts and/or --limit does not match any hosts")
+
         self.groups = self.inventory.list_groups()
-        self.hosts = [x.name for x in self.inventory.list_hosts(self.pattern)]
+        self.hosts = [x.name for x in hosts]
 
         # This hack is to work around readline issues on a mac:
         #  http://stackoverflow.com/a/7116997/541202

@@ -27,8 +27,8 @@
 # USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
 
-BOOLEANS_TRUE = ['yes', 'on', '1', 'true', 1, True]
-BOOLEANS_FALSE = ['no', 'off', '0', 'false', 0, False]
+BOOLEANS_TRUE = ['y', 'yes', 'on', '1', 'true', 1, True]
+BOOLEANS_FALSE = ['n', 'no', 'off', '0', 'false', 0, False]
 BOOLEANS = BOOLEANS_TRUE + BOOLEANS_FALSE
 
 # ansible modules can be written in any language.  To simplify
@@ -63,55 +63,17 @@ except ImportError:
     HAS_SYSLOG=False
 
 try:
-    # Python 2
-    from itertools import imap
+    from systemd import journal
+    has_journal = True
 except ImportError:
-    # Python 3
-    imap = map
+    has_journal = False
 
+HAVE_SELINUX=False
 try:
-    # Python 2
-    basestring
-except NameError:
-    # Python 3
-    basestring = str
-
-try:
-    # Python 2
-    unicode
-except NameError:
-    # Python 3
-    unicode = str
-
-try:
-    # Python 2.6+
-    bytes
-except NameError:
-    # Python 2.4
-    bytes = str
-
-try:
-    dict.iteritems
-except AttributeError:
-    # Python 3
-    def iteritems(d):
-        return d.items()
-else:
-    # Python 2
-    def iteritems(d):
-        return d.iteritems()
-
-try:
-    reduce
-except NameError:
-    # Python 3
-    from functools import reduce
-
-try:
-    NUMBERTYPES = (int, long, float)
-except NameError:
-    # Python 3
-    NUMBERTYPES = (int, float)
+    import selinux
+    HAVE_SELINUX=True
+except ImportError:
+    pass
 
 # Python2 & 3 way to get NoneType
 NoneType = type(None)
@@ -122,6 +84,12 @@ except ImportError:
     # python2.5
     Sequence = (list, tuple)
     Mapping = (dict,)
+
+try:
+    from collections.abc import KeysView
+    SEQUENCETYPE = (Sequence, KeysView)
+except:
+    SEQUENCETYPE = Sequence
 
 try:
     import json
@@ -136,24 +104,11 @@ except ImportError:
     try:
         import simplejson as json
     except ImportError:
-        print('{"msg": "Error: ansible requires the stdlib json or simplejson module, neither was found!", "failed": true}')
+        print('\n{"msg": "Error: ansible requires the stdlib json or simplejson module, neither was found!", "failed": true}')
         sys.exit(1)
     except SyntaxError:
-        print('{"msg": "SyntaxError: probably due to installed simplejson being for a different python version", "failed": true}')
+        print('\n{"msg": "SyntaxError: probably due to installed simplejson being for a different python version", "failed": true}')
         sys.exit(1)
-
-HAVE_SELINUX=False
-try:
-    import selinux
-    HAVE_SELINUX=True
-except ImportError:
-    pass
-
-try:
-    from systemd import journal
-    has_journal = True
-except ImportError:
-    has_journal = False
 
 AVAILABLE_HASH_ALGORITHMS = dict()
 try:
@@ -179,6 +134,7 @@ except ImportError:
         pass
 
 try:
+    # Python 2.6+
     from ast import literal_eval
 except ImportError:
     # a replacement for literal_eval that works with python 2.4. from:
@@ -195,6 +151,8 @@ except ImportError:
         and None.
         """
         _safe_names = {'None': None, 'True': True, 'False': False}
+        # Okay to use basestring and long here because this is only for
+        # python 2.4 and 2.5
         if isinstance(node_or_string, basestring):
             node_or_string = parse(node_or_string, mode='eval')
         if isinstance(node_or_string, ast.Expression):
@@ -219,14 +177,48 @@ except ImportError:
 
 _literal_eval = literal_eval
 
-from ansible import __version__
-# Backwards compat. New code should just import and use __version__
-ANSIBLE_VERSION = __version__
+from ansible.module_utils.six import (PY2, PY3, b, binary_type, integer_types,
+        iteritems, text_type, string_types)
+from ansible.module_utils.six.moves import map, reduce
+from ansible.module_utils.pycompat24 import get_exception
+from ansible.module_utils._text import to_native
 
-# Internal global holding passed in params and constants.  This is consulted
-# in case multiple AnsibleModules are created.  Otherwise each AnsibleModule
-# would attempt to read from stdin.  Other code should not use this directly
-# as it is an internal implementation detail
+_NUMBERTYPES = tuple(list(integer_types) + [float])
+
+# Deprecated compat.  Only kept in case another module used these names  Using
+# ansible.module_utils.six is preferred
+
+NUMBERTYPES = _NUMBERTYPES
+
+imap = map
+
+try:
+    # Python 2
+    unicode
+except NameError:
+    # Python 3
+    unicode = text_type
+
+try:
+    # Python 2.6+
+    bytes
+except NameError:
+    # Python 2.4
+    bytes = binary_type
+
+try:
+    # Python 2
+    basestring
+except NameError:
+    # Python 3
+    basestring = string_types
+
+# End of deprecated names
+
+# Internal global holding passed in params.  This is consulted in case
+# multiple AnsibleModules are created.  Otherwise each AnsibleModule would
+# attempt to read from stdin.  Other code should not use this directly as it
+# is an internal implementation detail
 _ANSIBLE_ARGS = None
 
 FILE_COMMON_ARGUMENTS=dict(
@@ -247,6 +239,7 @@ FILE_COMMON_ARGUMENTS=dict(
     regexp = dict(), # used by assemble
     delimiter = dict(), # used by assemble
     directory_mode = dict(), # used by copy
+    unsafe_writes  = dict(type='bool'), # should be available to any module using atomic_move
 )
 
 PASSWD_ARG_RE = re.compile(r'^[-]{0,2}pass[-]?(word|wd)?')
@@ -255,21 +248,6 @@ PASSWD_ARG_RE = re.compile(r'^[-]{0,2}pass[-]?(word|wd)?')
 PERM_BITS = int('07777', 8)      # file mode permission bits
 EXEC_PERM_BITS = int('00111', 8) # execute permission bits
 DEFAULT_PERM = int('0666', 8)    # default file permission bits
-
-
-def get_exception():
-    """Get the current exception.
-
-    This code needs to work on Python 2.4 through 3.x, so we cannot use
-    "except Exception, e:" (SyntaxError on Python 3.x) nor
-    "except Exception as e:" (SyntaxError on Python 2.4-2.5).
-    Instead we must use ::
-
-        except Exception:
-            e = get_exception()
-
-    """
-    return sys.exc_info()[1]
 
 
 def get_platform():
@@ -361,14 +339,14 @@ def json_dict_unicode_to_bytes(d, encoding='utf-8'):
         and dict container types (the containers that the json module returns)
     '''
 
-    if isinstance(d, unicode):
+    if isinstance(d, text_type):
         return d.encode(encoding)
     elif isinstance(d, dict):
-        return dict(imap(json_dict_unicode_to_bytes, iteritems(d), repeat(encoding)))
+        return dict(map(json_dict_unicode_to_bytes, iteritems(d), repeat(encoding)))
     elif isinstance(d, list):
-        return list(imap(json_dict_unicode_to_bytes, d, repeat(encoding)))
+        return list(map(json_dict_unicode_to_bytes, d, repeat(encoding)))
     elif isinstance(d, tuple):
-        return tuple(imap(json_dict_unicode_to_bytes, d, repeat(encoding)))
+        return tuple(map(json_dict_unicode_to_bytes, d, repeat(encoding)))
     else:
         return d
 
@@ -379,30 +357,34 @@ def json_dict_bytes_to_unicode(d, encoding='utf-8'):
         and dict container types (the containers that the json module returns)
     '''
 
-    if isinstance(d, bytes):
-        return unicode(d, encoding)
+    if isinstance(d, binary_type):
+        # Warning, can traceback
+        return d.decode(encoding)
     elif isinstance(d, dict):
-        return dict(imap(json_dict_bytes_to_unicode, iteritems(d), repeat(encoding)))
+        return dict(map(json_dict_bytes_to_unicode, iteritems(d), repeat(encoding)))
     elif isinstance(d, list):
-        return list(imap(json_dict_bytes_to_unicode, d, repeat(encoding)))
+        return list(map(json_dict_bytes_to_unicode, d, repeat(encoding)))
     elif isinstance(d, tuple):
-        return tuple(imap(json_dict_bytes_to_unicode, d, repeat(encoding)))
+        return tuple(map(json_dict_bytes_to_unicode, d, repeat(encoding)))
     else:
         return d
 
 def return_values(obj):
-    """ Return stringified values from datastructures. For use with removing
-    sensitive values pre-jsonification."""
-    if isinstance(obj, basestring):
+    """ Return native stringified values from datastructures.
+
+    For use with removing sensitive values pre-jsonification."""
+    if isinstance(obj, (text_type, binary_type)):
         if obj:
-            if isinstance(obj, bytes):
-                yield obj
-            else:
+            if isinstance(obj, text_type) and PY2:
                 # Unicode objects should all convert to utf-8
-                # (still must deal with surrogateescape on python3)
                 yield obj.encode('utf-8')
+            elif isinstance(obj, binary_type) and PY3:
+                yield obj.decode('utf-8', 'surrogateescape')
+            else:
+                # Already native string for this python version
+                yield obj
         return
-    elif isinstance(obj, Sequence):
+    elif isinstance(obj, SEQUENCETYPE):
         for element in obj:
             for subelement in return_values(element):
                 yield subelement
@@ -421,24 +403,30 @@ def return_values(obj):
 def remove_values(value, no_log_strings):
     """ Remove strings in no_log_strings from value.  If value is a container
     type, then remove a lot more"""
-    if isinstance(value, basestring):
-        if isinstance(value, unicode):
-            # This should work everywhere on python2. Need to check
-            # surrogateescape on python3
-            bytes_value = value.encode('utf-8')
-            value_is_unicode = True
-        else:
-            bytes_value = value
-            value_is_unicode = False
-        if bytes_value in no_log_strings:
+    if isinstance(value, (text_type, binary_type)):
+        # Need native str type
+        native_str_value = value
+        if isinstance(value, text_type):
+            value_is_text = True
+            if PY2:
+                native_str_value = value.encode('utf-8')
+        elif isinstance(value, binary_type):
+            value_is_text = False
+            if PY3:
+                native_str_value = value.decode('utf-8', 'surrogateescape')
+
+        if native_str_value in no_log_strings:
             return 'VALUE_SPECIFIED_IN_NO_LOG_PARAMETER'
         for omit_me in no_log_strings:
-            bytes_value = bytes_value.replace(omit_me, '*' * 8)
-        if value_is_unicode:
-            value = unicode(bytes_value, 'utf-8', errors='replace')
+            native_str_value = native_str_value.replace(omit_me, '*' * 8)
+
+        if value_is_text and isinstance(native_str_value, binary_type):
+            value = native_str_value.decode('utf-8', 'replace')
+        elif not value_is_text and isinstance(native_str_value, text_type):
+            value = native_str_value.encode('utf-8', 'surrogateescape')
         else:
-            value = bytes_value
-    elif isinstance(value, Sequence):
+            value = native_str_value
+    elif isinstance(value, SEQUENCETYPE):
         return [remove_values(elem, no_log_strings) for elem in value]
     elif isinstance(value, Mapping):
         return dict((k, remove_values(v, no_log_strings)) for k, v in value.items())
@@ -519,14 +507,71 @@ def heuristic_log_sanitize(data, no_log_values=None):
     return output
 
 def is_executable(path):
-    '''is the given path executable?'''
-    return (stat.S_IXUSR & os.stat(path)[stat.ST_MODE]
-            or stat.S_IXGRP & os.stat(path)[stat.ST_MODE]
-            or stat.S_IXOTH & os.stat(path)[stat.ST_MODE])
+    '''is the given path executable?
 
+    Limitations:
+    * Does not account for FSACLs.
+    * Most times we really want to know "Can the current user execute this
+      file"  This function does not tell us that, only if an execute bit is set.
+    '''
+    # These are all bitfields so first bitwise-or all the permissions we're
+    # looking for, then bitwise-and with the file's mode to determine if any
+    # execute bits are set.
+    return ((stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH) & os.stat(path)[stat.ST_MODE])
 
-class AnsibleFallbackNotFound(Exception):
-    pass
+def _load_params():
+    ''' read the modules parameters and store them globally.
+
+    This function may be needed for certain very dynamic custom modules which
+    want to process the parameters that are being handed the module.  Since
+    this is so closely tied to the implementation of modules we cannot
+    guarantee API stability for it (it may change between versions) however we
+    will try not to break it gratuitously.  It is certainly more future-proof
+    to call this function and consume its outputs than to implement the logic
+    inside it as a copy in your own code.
+    '''
+    global _ANSIBLE_ARGS
+    if _ANSIBLE_ARGS is not None:
+        buffer = _ANSIBLE_ARGS
+    else:
+        # debug overrides to read args from file or cmdline
+
+        # Avoid tracebacks when locale is non-utf8
+        # We control the args and we pass them as utf8
+        if len(sys.argv) > 1:
+            if os.path.isfile(sys.argv[1]):
+                fd = open(sys.argv[1], 'rb')
+                buffer = fd.read()
+                fd.close()
+            else:
+                buffer = sys.argv[1]
+                if PY3:
+                    buffer = buffer.encode('utf-8', errors='surrogateescape')
+        # default case, read from stdin
+        else:
+            if PY2:
+                buffer = sys.stdin.read()
+            else:
+                buffer = sys.stdin.buffer.read()
+        _ANSIBLE_ARGS = buffer
+
+    try:
+        params = json.loads(buffer.decode('utf-8'))
+    except ValueError:
+        # This helper used too early for fail_json to work.
+        print('\n{"msg": "Error: Module unable to decode valid JSON on stdin.  Unable to figure out what parameters were passed", "failed": true}')
+        sys.exit(1)
+
+    if PY2:
+        params = json_dict_unicode_to_bytes(params)
+
+    try:
+        return params['ANSIBLE_MODULE_ARGS']
+    except KeyError:
+        # This helper does not have access to fail_json so we have to print
+        # json output on our own.
+        print('\n{"msg": "Error: Module unable to locate ANSIBLE_MODULE_ARGS in json data from stdin.  Unable to figure out what parameters were passed", "failed": true}')
+        sys.exit(1)
 
 def env_fallback(*args, **kwargs):
     ''' Load value from environment '''
@@ -535,6 +580,23 @@ def env_fallback(*args, **kwargs):
             return os.environ[arg]
     else:
         raise AnsibleFallbackNotFound
+
+def _lenient_lowercase(lst):
+    """Lowercase elements of a list.
+
+    If an element is not a string, pass it through untouched.
+    """
+    lowered = []
+    for value in lst:
+        try:
+            lowered.append(value.lower())
+        except AttributeError:
+            lowered.append(value)
+    return lowered
+
+
+class AnsibleFallbackNotFound(Exception):
+    pass
 
 
 class AnsibleModule(object):
@@ -562,7 +624,7 @@ class AnsibleModule(object):
         self.run_command_environ_update = {}
 
         self.aliases = {}
-        self._legal_inputs = ['_ansible_check_mode', '_ansible_no_log', '_ansible_debug', '_ansible_diff', '_ansible_verbosity']
+        self._legal_inputs = ['_ansible_check_mode', '_ansible_no_log', '_ansible_debug', '_ansible_diff', '_ansible_verbosity', '_ansible_selinux_special_fs', '_ansible_module_name', '_ansible_version', '_ansible_syslog_facility']
 
         if add_file_common_args:
             for k, v in FILE_COMMON_ARGUMENTS.items():
@@ -578,7 +640,7 @@ class AnsibleModule(object):
         except Exception:
             e = get_exception()
             # Use exceptions here because it isn't safe to call fail_json until no_log is processed
-            print('{"failed": true, "msg": "Module alias error: %s"}' % str(e))
+            print('\n{"failed": true, "msg": "Module alias error: %s"}' % str(e))
             sys.exit(1)
 
         # Save parameter values that should never be logged
@@ -613,6 +675,10 @@ class AnsibleModule(object):
                 'float': self._check_type_float,
                 'path': self._check_type_path,
                 'raw': self._check_type_raw,
+                'jsonarg': self._check_type_jsonarg,
+                'json': self._check_type_jsonarg,
+                'bytes': self._check_type_bytes,
+                'bits': self._check_type_bits,
             }
         if not bypass_checks:
             self._check_required_arguments()
@@ -708,26 +774,13 @@ class AnsibleModule(object):
             context.append(None)
         return context
 
-    def _to_filesystem_str(self, path):
-        '''Returns filesystem path as a str, if it wasn't already.
-
-        Used in selinux interactions because it cannot accept unicode
-        instances, and specifying complex args in a playbook leaves
-        you with unicode instances.  This method currently assumes
-        that your filesystem encoding is UTF-8.
-
-        '''
-        if isinstance(path, unicode):
-            path = path.encode("utf-8")
-        return path
-
     # If selinux fails to find a default, return an array of None
     def selinux_default_context(self, path, mode=0):
         context = self.selinux_initial_context()
         if not HAVE_SELINUX or not self.selinux_enabled():
             return context
         try:
-            ret = selinux.matchpathcon(self._to_filesystem_str(path), mode)
+            ret = selinux.matchpathcon(to_native(path, 'strict'), mode)
         except OSError:
             return context
         if ret[0] == -1:
@@ -742,7 +795,7 @@ class AnsibleModule(object):
         if not HAVE_SELINUX or not self.selinux_enabled():
             return context
         try:
-            ret = selinux.lgetfilecon_raw(self._to_filesystem_str(path))
+            ret = selinux.lgetfilecon_raw(to_native(path, 'strict'))
         except OSError:
             e = get_exception()
             if e.errno == errno.ENOENT:
@@ -764,7 +817,7 @@ class AnsibleModule(object):
         return (uid, gid)
 
     def find_mount_point(self, path):
-        path = os.path.abspath(os.path.expanduser(os.path.expandvars(path)))
+        path = os.path.realpath(os.path.expanduser(os.path.expandvars(path)))
         while not os.path.ismount(path):
             path = os.path.dirname(path)
         return path
@@ -785,7 +838,7 @@ class AnsibleModule(object):
             (device, mount_point, fstype, options, rest) = line.split(' ', 4)
 
             if path_mount_point == mount_point:
-                for fs in self.constants['SELINUX_SPECIAL_FS']:
+                for fs in self._selinux_special_fs:
                     if fs in fstype:
                         special_context = self.selinux_context(path_mount_point)
                         return (True, special_context)
@@ -830,7 +883,7 @@ class AnsibleModule(object):
             try:
                 if self.check_mode:
                     return True
-                rc = selinux.lsetfilecon(self._to_filesystem_str(path),
+                rc = selinux.lsetfilecon(to_native(path),
                                          str(':'.join(new_context)))
             except OSError:
                 e = get_exception()
@@ -1178,11 +1231,10 @@ class AnsibleModule(object):
         return aliases_results
 
     def _check_arguments(self, check_invalid_arguments):
-        for (k,v) in self.params.items():
+        self._syslog_facility = 'LOG_USER'
+        for (k,v) in list(self.params.items()):
 
             if k == '_ansible_check_mode' and v:
-                if not self.supports_check_mode:
-                    self.exit_json(skipped=True, msg="remote module does not support check mode")
                 self.check_mode = True
 
             elif k == '_ansible_no_log':
@@ -1197,12 +1249,27 @@ class AnsibleModule(object):
             elif k == '_ansible_verbosity':
                 self._verbosity = v
 
+            elif k == '_ansible_selinux_special_fs':
+                self._selinux_special_fs = v
+
+            elif k == '_ansible_syslog_facility':
+                self._syslog_facility = v
+
+            elif k == '_ansible_version':
+                self.ansible_version = v
+
+            elif k == '_ansible_module_name':
+                self._name = v
+
             elif check_invalid_arguments and k not in self._legal_inputs:
                 self.fail_json(msg="unsupported parameter for module: %s" % k)
 
             #clean up internal params:
             if k.startswith('_ansible_'):
                 del self.params[k]
+
+        if self.check_mode and not self.supports_check_mode:
+                self.exit_json(skipped=True, msg="remote module (%s) does not support check mode" % self._name)
 
     def _count_terms(self, check):
         count = 0
@@ -1267,34 +1334,53 @@ class AnsibleModule(object):
             choices = v.get('choices',None)
             if choices is None:
                 continue
-            if type(choices) == list:
+            if isinstance(choices, SEQUENCETYPE):
                 if k in self.params:
                     if self.params[k] not in choices:
-                        choices_str=",".join([str(c) for c in choices])
-                        msg="value of %s must be one of: %s, got: %s" % (k, choices_str, self.params[k])
-                        self.fail_json(msg=msg)
-            else:
-                self.fail_json(msg="internal error: do not know how to interpret argument_spec")
+                        # PyYaml converts certain strings to bools.  If we can unambiguously convert back, do so before checking the value.  If we can't figure this out, module author is responsible.
+                        lowered_choices = None
+                        if self.params[k] == 'False':
+                            lowered_choices = _lenient_lowercase(choices)
+                            FALSEY = frozenset(BOOLEANS_FALSE)
+                            overlap = FALSEY.intersection(choices)
+                            if len(overlap) == 1:
+                                # Extract from a set
+                                (self.params[k],) = overlap
 
-    def safe_eval(self, str, locals=None, include_exceptions=False):
+                        if self.params[k] == 'True':
+                            if lowered_choices is None:
+                                lowered_choices = _lenient_lowercase(choices)
+                            TRUTHY = frozenset(BOOLEANS_TRUE)
+                            overlap = TRUTHY.intersection(choices)
+                            if len(overlap) == 1:
+                                (self.params[k],) = overlap
+
+                        if self.params[k] not in choices:
+                            choices_str=",".join([str(c) for c in choices])
+                            msg="value of %s must be one of: %s, got: %s" % (k, choices_str, self.params[k])
+                            self.fail_json(msg=msg)
+            else:
+                self.fail_json(msg="internal error: choices for argument %s are not iterable: %s" % (k, choices))
+
+    def safe_eval(self, value, locals=None, include_exceptions=False):
 
         # do not allow method calls to modules
-        if not isinstance(str, basestring):
-            # already templated to a datastructure, perhaps?
+        if not isinstance(value, string_types):
+            # already templated to a datavaluestructure, perhaps?
             if include_exceptions:
-                return (str, None)
-            return str
-        if re.search(r'\w\.\w+\(', str):
+                return (value, None)
+            return value
+        if re.search(r'\w\.\w+\(', value):
             if include_exceptions:
-                return (str, None)
-            return str
+                return (value, None)
+            return value
         # do not allow imports
-        if re.search(r'import \w+', str):
+        if re.search(r'import \w+', value):
             if include_exceptions:
-                return (str, None)
-            return str
+                return (value, None)
+            return value
         try:
-            result = literal_eval(str)
+            result = literal_eval(value)
             if include_exceptions:
                 return (result, None)
             else:
@@ -1302,11 +1388,11 @@ class AnsibleModule(object):
         except Exception:
             e = get_exception()
             if include_exceptions:
-                return (str, e)
-            return str
+                return (value, e)
+            return value
 
     def _check_type_str(self, value):
-        if isinstance(value, basestring):
+        if isinstance(value, string_types):
             return value
         # Note: This could throw a unicode error if value's __str__() method
         # returns non-ascii.  Have to port utils.to_bytes() if that happens
@@ -1316,7 +1402,7 @@ class AnsibleModule(object):
         if isinstance(value, list):
             return value
 
-        if isinstance(value, basestring):
+        if isinstance(value, string_types):
             return value.split(",")
         elif isinstance(value, int) or isinstance(value, float):
             return [ str(value) ]
@@ -1327,7 +1413,7 @@ class AnsibleModule(object):
         if isinstance(value, dict):
             return value
 
-        if isinstance(value, basestring):
+        if isinstance(value, string_types):
             if value.startswith("{"):
                 try:
                     return json.loads(value)
@@ -1372,7 +1458,7 @@ class AnsibleModule(object):
         if isinstance(value, bool):
             return value
 
-        if isinstance(value, basestring) or isinstance(value, int):
+        if isinstance(value, string_types) or isinstance(value, int):
             return self.boolean(value)
 
         raise TypeError('%s cannot be converted to a bool' % type(value))
@@ -1381,7 +1467,7 @@ class AnsibleModule(object):
         if isinstance(value, int):
             return value
 
-        if isinstance(value, basestring):
+        if isinstance(value, string_types):
             return int(value)
 
         raise TypeError('%s cannot be converted to an int' % type(value))
@@ -1390,7 +1476,7 @@ class AnsibleModule(object):
         if isinstance(value, float):
             return value
 
-        if isinstance(value, basestring):
+        if isinstance(value, string_types):
             return float(value)
 
         raise TypeError('%s cannot be converted to a float' % type(value))
@@ -1399,9 +1485,32 @@ class AnsibleModule(object):
         value = self._check_type_str(value)
         return os.path.expanduser(os.path.expandvars(value))
 
+    def _check_type_jsonarg(self, value):
+        # Return a jsonified string.  Sometimes the controller turns a json
+        # string into a dict/list so transform it back into json here
+        if isinstance(value, (text_type, binary_type)):
+            return value.strip()
+        else:
+            if isinstance(value, (list, tuple, dict)):
+                return json.dumps(value)
+        raise TypeError('%s cannot be converted to a json string' % type(value))
+
     def _check_type_raw(self, value):
         return value
 
+
+    def _check_type_bytes(self, value):
+        try:
+            self.human_to_bytes(value)
+        except ValueError:
+            raise TypeError('%s cannot be converted to a Byte value' % type(value))
+
+
+    def _check_type_bits(self, value):
+        try:
+            self.human_to_bytes(value, bits=True)
+        except ValueError:
+            raise TypeError('%s cannot be converted to a Bit value' % type(value))
 
     def _check_argument_types(self):
         ''' ensure all arguments have the requested type '''
@@ -1460,54 +1569,18 @@ class AnsibleModule(object):
                     continue
 
     def _load_params(self):
-        ''' read the input and set the params attribute.  Sets the constants as well.'''
+        ''' read the input and set the params attribute.
+
+        This method is for backwards compatibility.  The guts of the function
+        were moved out in 2.1 so that custom modules could read the parameters.
+        '''
         # debug overrides to read args from file or cmdline
-
-        global _ANSIBLE_ARGS
-        if _ANSIBLE_ARGS is not None:
-            buffer = _ANSIBLE_ARGS
-        else:
-            # Avoid tracebacks when locale is non-utf8
-            # We control the args and we pass them as utf8
-            if len(sys.argv) > 1:
-                if os.path.isfile(sys.argv[1]):
-                    fd = open(sys.argv[1], 'rb')
-                    buffer = fd.read()
-                    fd.close()
-                else:
-                    buffer = sys.argv[1]
-                    if sys.version_info >= (3,):
-                        buffer = buffer.encode('utf-8', errors='surrogateescape')
-            # default case, read from stdin
-            else:
-                if sys.version_info < (3,):
-                    buffer = sys.stdin.read()
-                else:
-                    buffer = sys.stdin.buffer.read()
-            _ANSIBLE_ARGS = buffer
-
-        try:
-            params = json.loads(buffer.decode('utf-8'))
-        except ValueError:
-            # This helper used too early for fail_json to work.
-            print('{"msg": "Error: Module unable to decode valid JSON on stdin.  Unable to figure out what parameters were passed", "failed": true}')
-            sys.exit(1)
-
-        if sys.version_info < (3,):
-            params = json_dict_unicode_to_bytes(params)
-
-        try:
-            self.params = params['ANSIBLE_MODULE_ARGS']
-            self.constants = params['ANSIBLE_MODULE_CONSTANTS']
-        except KeyError:
-            # This helper used too early for fail_json to work.
-            print('{"msg": "Error: Module unable to locate ANSIBLE_MODULE_ARGS and ANSIBLE_MODULE_CONSTANTS in json data from stdin.  Unable to figure out what parameters were passed", "failed": true}')
-            sys.exit(1)
+        self.params = _load_params()
 
     def _log_to_syslog(self, msg):
         if HAS_SYSLOG:
-            module = 'ansible-%s' % os.path.basename(__file__)
-            facility = getattr(syslog, self.constants.get('SYSLOG_FACILITY', 'LOG_USER'), syslog.LOG_USER)
+            module = 'ansible-%s' % self._name
+            facility = getattr(syslog, self._syslog_facility, syslog.LOG_USER)
             syslog.openlog(str(module), 0, facility)
             syslog.syslog(syslog.LOG_INFO, msg)
 
@@ -1522,23 +1595,23 @@ class AnsibleModule(object):
             if log_args is None:
                 log_args = dict()
 
-            module = 'ansible-%s' % os.path.basename(__file__)
-            if isinstance(module, bytes):
+            module = 'ansible-%s' % self._name
+            if isinstance(module, binary_type):
                 module = module.decode('utf-8', 'replace')
 
             # 6655 - allow for accented characters
-            if not isinstance(msg, (bytes, unicode)):
+            if not isinstance(msg, (binary_type, text_type)):
                 raise TypeError("msg should be a string (got %s)" % type(msg))
 
             # We want journal to always take text type
             # syslog takes bytes on py2, text type on py3
-            if isinstance(msg, bytes):
+            if isinstance(msg, binary_type):
                 journal_msg = remove_values(msg.decode('utf-8', 'replace'), self.no_log_values)
             else:
                 # TODO: surrogateescape is a danger here on Py3
                 journal_msg = remove_values(msg, self.no_log_values)
 
-            if sys.version_info >= (3,):
+            if PY3:
                 syslog_msg = journal_msg
             else:
                 syslog_msg = journal_msg.encode('utf-8', 'replace')
@@ -1573,18 +1646,18 @@ class AnsibleModule(object):
                 log_args[param] = 'NOT_LOGGING_PASSWORD'
             else:
                 param_val = self.params[param]
-                if not isinstance(param_val, basestring):
+                if not isinstance(param_val, (text_type, binary_type)):
                     param_val = str(param_val)
-                elif isinstance(param_val, unicode):
+                elif isinstance(param_val, text_type):
                     param_val = param_val.encode('utf-8')
                 log_args[param] = heuristic_log_sanitize(param_val, self.no_log_values)
 
         msg = []
         for arg in log_args:
             arg_val = log_args[arg]
-            if not isinstance(arg_val, basestring):
+            if not isinstance(arg_val, (text_type, binary_type)):
                 arg_val = str(arg_val)
-            elif isinstance(arg_val, unicode):
+            elif isinstance(arg_val, text_type):
                 arg_val = arg_val.encode('utf-8')
             msg.append('%s=%s' % (arg, arg_val))
         if msg:
@@ -1649,7 +1722,7 @@ class AnsibleModule(object):
         ''' return a bool for the arg '''
         if arg is None or type(arg) == bool:
             return arg
-        if isinstance(arg, basestring):
+        if isinstance(arg, string_types):
             arg = arg.lower()
         if arg in BOOLEANS_TRUE:
             return True
@@ -1693,7 +1766,7 @@ class AnsibleModule(object):
             kwargs['invocation'] = {'module_args': self.params}
         kwargs = remove_values(kwargs, self.no_log_values)
         self.do_cleanup_files()
-        print(self.jsonify(kwargs))
+        print('\n%s' % self.jsonify(kwargs))
         sys.exit(0)
 
     def fail_json(self, **kwargs):
@@ -1705,7 +1778,7 @@ class AnsibleModule(object):
             kwargs['invocation'] = {'module_args': self.params}
         kwargs = remove_values(kwargs, self.no_log_values)
         self.do_cleanup_files()
-        print(self.jsonify(kwargs))
+        print('\n%s' % self.jsonify(kwargs))
         sys.exit(1)
 
     def fail_on_missing_params(self, required_params=None):
@@ -1777,7 +1850,7 @@ class AnsibleModule(object):
         if os.path.exists(fn):
             # backups named basename-YYYY-MM-DD@HH:MM:SS~
             ext = time.strftime("%Y-%m-%d@%H:%M:%S~", time.localtime(time.time()))
-            backupdest = '%s.%s' % (fn, ext)
+            backupdest = '%s.%s.%s' % (fn, os.getpid(), ext)
 
             try:
                 shutil.copy2(fn, backupdest)
@@ -1936,11 +2009,15 @@ class AnsibleModule(object):
             if use_unsafe_shell:
                 args = " ".join([pipes.quote(x) for x in args])
                 shell = True
-        elif isinstance(args, basestring) and use_unsafe_shell:
+        elif isinstance(args, (binary_type, text_type)) and use_unsafe_shell:
             shell = True
-        elif isinstance(args, basestring):
-            if isinstance(args, unicode):
+        elif isinstance(args, string_types):
+            # On python2.6 and below, shlex has problems with text type
+            # On python3, shlex needs a text type.
+            if PY2 and isinstance(args, text_type):
                 args = args.encode('utf-8')
+            elif PY3 and isinstance(args, binary_type):
+                args = args.decode('utf-8', errors='surrogateescape')
             args = shlex.split(args)
         else:
             msg = "Argument 'args' to run_command must be list or string"
@@ -1948,6 +2025,11 @@ class AnsibleModule(object):
 
         prompt_re = None
         if prompt_regex:
+            if isinstance(prompt_regex, text_type):
+                if PY3:
+                    prompt_regex = prompt_regex.encode('utf-8', errors='surrogateescape')
+                elif PY2:
+                    prompt_regex = prompt_regex.encode('utf-8')
             try:
                 prompt_re = re.compile(prompt_regex, re.MULTILINE)
             except re.error:
@@ -1975,18 +2057,33 @@ class AnsibleModule(object):
             old_env_vals['PATH'] = os.environ['PATH']
             os.environ['PATH'] = "%s:%s" % (path_prefix, os.environ['PATH'])
 
+        # If using test-module and explode, the remote lib path will resemble ...
+        #   /tmp/test_module_scratch/debug_dir/ansible/module_utils/basic.py
+        # If using ansible or ansible-playbook with a remote system ...
+        #   /tmp/ansible_vmweLQ/ansible_modlib.zip/ansible/module_utils/basic.py
+
+        # Clean out python paths set by ansiballz
+        if 'PYTHONPATH' in os.environ:
+            pypaths = os.environ['PYTHONPATH'].split(':')
+            pypaths = [x for x in pypaths \
+                        if not x.endswith('/ansible_modlib.zip') \
+                        and not x.endswith('/debug_dir')]
+            os.environ['PYTHONPATH'] = ':'.join(pypaths)
+            if not os.environ['PYTHONPATH']:
+                del os.environ['PYTHONPATH']
+
         # create a printable version of the command for use
         # in reporting later, which strips out things like
         # passwords from the args list
-        if isinstance(args, basestring):
-            if isinstance(args, unicode):
-                b_args = args.encode('utf-8')
-            else:
-                b_args = args
-            to_clean_args = shlex.split(b_args)
-            del b_args
+        to_clean_args = args
+        if PY2:
+            if isinstance(args, text_type):
+                to_clean_args = args.encode('utf-8')
         else:
-            to_clean_args = args
+            if isinstance(args, binary_type):
+                to_clean_args = args.decode('utf-8', errors='replace')
+        if isinstance(args, (text_type, binary_type)):
+            to_clean_args = shlex.split(to_clean_args)
 
         clean_args = []
         is_passwd = False
@@ -2016,7 +2113,6 @@ class AnsibleModule(object):
             stdin=st_in,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            env=os.environ,
         )
 
         if cwd and os.path.isdir(cwd):
@@ -2046,13 +2142,19 @@ class AnsibleModule(object):
             # the communication logic here is essentially taken from that
             # of the _communicate() function in ssh.py
 
-            stdout = ''
-            stderr = ''
+            stdout = b('')
+            stderr = b('')
             rpipes = [cmd.stdout, cmd.stderr]
 
             if data:
                 if not binary_data:
                     data += '\n'
+                if isinstance(data, text_type):
+                    if PY3:
+                        errors = 'surrogateescape'
+                    else:
+                        errors = 'strict'
+                    data = data.encode('utf-8', errors=errors)
                 cmd.stdin.write(data)
                 cmd.stdin.close()
 
@@ -2061,12 +2163,12 @@ class AnsibleModule(object):
                 if cmd.stdout in rfd:
                     dat = os.read(cmd.stdout.fileno(), 9000)
                     stdout += dat
-                    if dat == '':
+                    if dat == b(''):
                         rpipes.remove(cmd.stdout)
                 if cmd.stderr in rfd:
                     dat = os.read(cmd.stderr.fileno(), 9000)
                     stderr += dat
-                    if dat == '':
+                    if dat == b(''):
                         rpipes.remove(cmd.stderr)
                 # if we're checking for prompts, do it now
                 if prompt_re:
@@ -2118,21 +2220,54 @@ class AnsibleModule(object):
         fh.write(str)
         fh.close()
 
-    def pretty_bytes(self,size):
+    def bytes_to_human(self, size):
+
         ranges = (
-                (1<<70, 'ZB'),
-                (1<<60, 'EB'),
-                (1<<50, 'PB'),
-                (1<<40, 'TB'),
-                (1<<30, 'GB'),
-                (1<<20, 'MB'),
-                (1<<10, 'KB'),
+                (1 << 70, 'ZB'),
+                (1 << 60, 'EB'),
+                (1 << 50, 'PB'),
+                (1 << 40, 'TB'),
+                (1 << 30, 'GB'),
+                (1 << 20, 'MB'),
+                (1 << 10, 'KB'),
                 (1, 'Bytes')
             )
         for limit, suffix in ranges:
             if size >= limit:
                 break
         return '%.2f %s' % (float(size)/ limit, suffix)
+
+    # for backwards compatibility
+    pretty_bytes = bytes_to_human
+
+    def human_to_bytes(number, bits=False):
+
+        result = None
+        suffixes = ['B', 'KB', 'MB', 'GB', 'TB', 'PB', 'EB', 'ZB']
+        full = 'Bytes'
+
+        if bits:
+            suffixes = [ x.replace('B', 'b') for x in suffixes ]
+            full = 'Bits'
+
+        if number is None:
+            result = 0
+        elif isinstance(number, int):
+            result = number
+        elif number.isdigit():
+            result = int(number)
+        elif full in number:
+            result = int(number.replace(full,''))
+        else:
+            for i, suffix in enumerate(suffixes):
+                if suffix in number:
+                    result = int(number.replace(suffix ,'')) * (1024 ** i)
+                    break
+
+        if result is None:
+            raise ValueError("Failed to convert %s. The suffix must be one of %s or %s" % (number, full, ', '.join(suffixes)))
+
+        return result
 
     #
     # Backwards compat

@@ -33,7 +33,6 @@ from ansible.errors import AnsibleError, AnsibleConnectionFailure
 try:
     import winrm
     from winrm import Response
-    from winrm.exceptions import WinRMTransportError
     from winrm.protocol import Protocol
 except ImportError:
     raise AnsibleError("winrm is not installed")
@@ -63,7 +62,7 @@ class Connection(ConnectionBase):
     '''WinRM connections over HTTP/HTTPS.'''
 
     transport = 'winrm'
-    module_implementation_preferences = ('.ps1', '')
+    module_implementation_preferences = ('.ps1', '.exe', '')
     become_methods = []
     allow_executable = False
 
@@ -79,16 +78,14 @@ class Connection(ConnectionBase):
 
         super(Connection, self).__init__(*args, **kwargs)
 
-    def set_host_overrides(self, host):
+    def set_host_overrides(self, host, hostvars=None):
         '''
         Override WinRM-specific options from host variables.
         '''
-        host_vars = combine_vars(host.get_group_vars(), host.get_vars())
-
         self._winrm_host = self._play_context.remote_addr
         self._winrm_port = int(self._play_context.port or 5986)
-        self._winrm_scheme = host_vars.get('ansible_winrm_scheme', 'http' if self._winrm_port == 5985 else 'https')
-        self._winrm_path = host_vars.get('ansible_winrm_path', '/wsman')
+        self._winrm_scheme = hostvars.get('ansible_winrm_scheme', 'http' if self._winrm_port == 5985 else 'https')
+        self._winrm_path = hostvars.get('ansible_winrm_path', '/wsman')
         self._winrm_user = self._play_context.remote_user
         self._winrm_pass = self._play_context.password
 
@@ -105,7 +102,7 @@ class Connection(ConnectionBase):
             self._winrm_transport = 'kerberos,%s' % transport_selector
         else:
             self._winrm_transport = transport_selector
-        self._winrm_transport = host_vars.get('ansible_winrm_transport', self._winrm_transport)
+        self._winrm_transport = hostvars.get('ansible_winrm_transport', self._winrm_transport)
         if isinstance(self._winrm_transport, basestring):
             self._winrm_transport = [x.strip() for x in self._winrm_transport.split(',') if x.strip()]
 
@@ -114,22 +111,23 @@ class Connection(ConnectionBase):
         if unsupported_transports:
             raise AnsibleError('The installed version of WinRM does not support transport(s) %s' % list(unsupported_transports))
 
+        # arg names we're going passing directly
+        internal_kwarg_mask = set(['self', 'endpoint', 'transport', 'username', 'password', 'scheme', 'path'])
+
         self._winrm_kwargs = dict(username=self._winrm_user, password=self._winrm_pass)
         argspec = inspect.getargspec(Protocol.__init__)
         supported_winrm_args = set(argspec.args)
-        passed_winrm_args = set([v.replace('ansible_winrm_', '') for v in host_vars if v.startswith('ansible_winrm_')])
+        supported_winrm_args.update(internal_kwarg_mask)
+        passed_winrm_args = set([v.replace('ansible_winrm_', '') for v in hostvars if v.startswith('ansible_winrm_')])
         unsupported_args = passed_winrm_args.difference(supported_winrm_args)
 
         # warn for kwargs unsupported by the installed version of pywinrm
         for arg in unsupported_args:
-            display.warning("ansible_winrm_{0} unsupported by pywinrm (are you running the right pywinrm version?)".format(arg))
-
-        # arg names we're going passing directly
-        internal_kwarg_mask = set(['self', 'endpoint', 'transport', 'username', 'password'])
+            display.warning("ansible_winrm_{0} unsupported by pywinrm (is an up-to-date version of pywinrm installed?)".format(arg))
 
         # pass through matching kwargs, excluding the list we want to treat specially
         for arg in passed_winrm_args.difference(internal_kwarg_mask).intersection(supported_winrm_args):
-            self._winrm_kwargs[arg] = host_vars['ansible_winrm_%s' % arg]
+            self._winrm_kwargs[arg] = hostvars['ansible_winrm_%s' % arg]
 
     def _winrm_connect(self):
         '''
@@ -147,9 +145,8 @@ class Connection(ConnectionBase):
             display.vvvvv('WINRM CONNECT: transport=%s endpoint=%s' % (transport, endpoint), host=self._winrm_host)
             try:
                 protocol = Protocol(endpoint, transport=transport, **self._winrm_kwargs)
-                # send keepalive message to ensure we're awake
-                # TODO: is this necessary?
-                # protocol.send_message(xmltodict.unparse(rq))
+
+                # open the shell from connect so we know we're able to talk to the server
                 if not self.shell_id:
                     self.shell_id = protocol.open_shell(codepage=65001) # UTF-8
                     display.vvvvv('WINRM OPEN SHELL: %s' % self.shell_id, host=self._winrm_host)
@@ -163,7 +160,7 @@ class Connection(ConnectionBase):
                 if m:
                     code = int(m.groups()[0])
                     if code == 401:
-                        err_msg = 'the username/password specified for this server was incorrect'
+                        err_msg = 'the specified credentials were rejected by the server'
                     elif code == 411:
                         return protocol
                 errors.append(u'%s: %s' % (transport, err_msg))
@@ -236,6 +233,7 @@ class Connection(ConnectionBase):
                 self.protocol.cleanup_command(self.shell_id, command_id)
 
     def _connect(self):
+        super(Connection, self)._connect()
         if not self.protocol:
             self.protocol = self._winrm_connect()
             self._connected = True
@@ -282,7 +280,7 @@ class Connection(ConnectionBase):
             try:
                 result.std_err = self.parse_clixml_stream(result.std_err)
             except:
-                # unsure if we're guaranteed a valid xml doc- keep original output just in case
+                # unsure if we're guaranteed a valid xml doc- use raw output in case of error
                 pass
 
         return (result.status_code, result.std_out, result.std_err)
@@ -294,7 +292,7 @@ class Connection(ConnectionBase):
     def parse_clixml_stream(self, clixml_doc, stream_name='Error'):
         clear_xml = clixml_doc.replace('#< CLIXML\r\n', '')
         doc = xmltodict.parse(clear_xml)
-        lines = [l.get('#text', '') for l in doc.get('Objs', {}).get('S', {}) if l.get('@S') == stream_name]
+        lines = [l.get('#text', '').replace('_x000D__x000A_', '') for l in doc.get('Objs', {}).get('S', {}) if l.get('@S') == stream_name]
         return '\r\n'.join(lines)
 
     # FUTURE: determine buffer size at runtime via remote winrm config?

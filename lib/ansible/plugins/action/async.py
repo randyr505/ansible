@@ -18,10 +18,12 @@ from __future__ import (absolute_import, division, print_function)
 __metaclass__ = type
 
 import json
+import pipes
 import random
 
 from ansible import constants as C
 from ansible.plugins.action import ActionBase
+from ansible.compat.six import iteritems
 from ansible.utils.unicode import to_unicode
 
 class ActionModule(ActionBase):
@@ -54,15 +56,18 @@ class ActionModule(ActionBase):
             module_args['_ansible_no_log'] = True
 
         # configure, upload, and chmod the target module
-        (module_style, shebang, module_data) = self._configure_module(module_name=module_name, module_args=module_args, task_vars=task_vars)
-        self._transfer_data(remote_module_path, module_data)
+        (module_style, shebang, module_data, module_path) = self._configure_module(module_name=module_name, module_args=module_args, task_vars=task_vars)
+        if module_style == 'binary':
+            self._transfer_file(module_path, remote_module_path)
+        else:
+            self._transfer_data(remote_module_path, module_data)
 
         # configure, upload, and chmod the async_wrapper module
-        (async_module_style, shebang, async_module_data) = self._configure_module(module_name='async_wrapper', module_args=dict(), task_vars=task_vars)
+        (async_module_style, shebang, async_module_data, _) = self._configure_module(module_name='async_wrapper', module_args=dict(), task_vars=task_vars)
         self._transfer_data(async_module_path, async_module_data)
 
         argsfile = None
-        if module_style == 'non_native_want_json':
+        if module_style in ('non_native_want_json', 'binary'):
             argsfile = self._transfer_data(self._connection._shell.join_path(tmp, 'arguments'), json.dumps(module_args))
         elif module_style == 'old':
             args_data = ""
@@ -70,17 +75,13 @@ class ActionModule(ActionBase):
                 args_data += '%s="%s" ' % (k, pipes.quote(to_unicode(v)))
             argsfile = self._transfer_data(self._connection._shell.join_path(tmp, 'arguments'), args_data)
 
-        self._fixup_perms(tmp, remote_user, execute=True, recursive=True)
-        # Only the following two files need to be executable but we'd have to
-        # make three remote calls if we wanted to just set them executable.
-        # There's not really a problem with marking too many of the temp files
-        # executable so we go ahead and mark them all as executable in the
-        # line above (the line above is needed in any case [although
-        # execute=False is okay if we uncomment the lines below] so that all
-        # the files are readable in case the remote_user and become_user are
-        # different and both unprivileged)
-        #self._fixup_perms(remote_module_path, remote_user, execute=True, recursive=False)
-        #self._fixup_perms(async_module_path, remote_user, execute=True, recursive=False)
+        remote_paths = tmp, remote_module_path, async_module_path
+
+        # argsfile doesn't need to be executable, but this saves an extra call to the remote host
+        if argsfile:
+            remote_paths += argsfile,
+
+        self._fixup_perms(remote_paths, remote_user, execute=True)
 
         async_limit = self._task.async
         async_jid   = str(random.randint(0, 999999999999))
@@ -95,5 +96,12 @@ class ActionModule(ActionBase):
         self._remove_tmp_path(tmp)
 
         result['changed'] = True
+
+        if 'skipped' in result and result['skipped'] or 'failed' in result and result['failed']:
+            return result
+
+        # the async_wrapper module returns dumped JSON via its stdout
+        # response, so we parse it here and replace the result
+        result = self._parse_returned_data(result)
 
         return result

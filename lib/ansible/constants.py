@@ -28,27 +28,36 @@ from ansible.compat.six.moves import configparser
 
 from ansible.parsing.quoting import unquote
 from ansible.errors import AnsibleOptionsError
+from ansible.utils.path import makedirs_safe
+
+BOOL_TRUE = frozenset([ "true", "t", "y", "1", "yes", "on" ])
 
 # copied from utils, avoid circular reference fun :)
 def mk_boolean(value):
     if value is None:
         return False
     val = str(value)
-    if val.lower() in [ "true", "t", "y", "1", "yes" ]:
+    if val.lower() in BOOL_TRUE:
         return True
     else:
         return False
 
-def shell_expand(path):
+def shell_expand(path, expand_relative_paths=False):
     '''
     shell_expand is needed as os.path.expanduser does not work
     when path is None, which is the default for ANSIBLE_PRIVATE_KEY_FILE
     '''
     if path:
         path = os.path.expanduser(os.path.expandvars(path))
+        if expand_relative_paths and not path.startswith('/'):
+            # paths are always 'relative' to the config?
+            if 'CONFIG_FILE' in globals():
+                CFGDIR = os.path.dirname(CONFIG_FILE)
+                path = os.path.join(CFGDIR, path)
+            path = os.path.abspath(path)
     return path
 
-def get_config(p, section, key, env_var, default, boolean=False, integer=False, floating=False, islist=False, isnone=False, ispath=False, ispathlist=False, istmppath=False):
+def get_config(p, section, key, env_var, default, boolean=False, integer=False, floating=False, islist=False, isnone=False, ispath=False, ispathlist=False, istmppath=False, expand_relative_paths=False):
     ''' return a configuration variable with casting '''
     value = _get_config(p, section, key, env_var, default)
     if boolean:
@@ -69,11 +78,13 @@ def get_config(p, section, key, env_var, default, boolean=False, integer=False, 
         elif istmppath:
             value = shell_expand(value)
             if not os.path.exists(value):
-                os.makedirs(value, 0o700)
-            value = tempfile.mkdtemp(prefix='ansible-local-tmp', dir=value)
+                makedirs_safe(value, 0o700)
+            prefix = 'ansible-local-%s' % os.getpid()
+            value = tempfile.mkdtemp(prefix=prefix, dir=value)
         elif ispathlist:
             if isinstance(value, string_types):
-                value = [shell_expand(x) for x in value.split(os.pathsep)]
+                value = [shell_expand(x, expand_relative_paths=expand_relative_paths) \
+                         for x in value.split(os.pathsep)]
         elif isinstance(value, string_types):
             value = unquote(value)
     return value
@@ -140,14 +151,14 @@ DEFAULT_PATTERN           = get_config(p, DEFAULTS, 'pattern', None, None)
 DEFAULT_DEBUG             = get_config(p, DEFAULTS, 'debug',            'ANSIBLE_DEBUG',            False, boolean=True)
 DEFAULT_HOST_LIST         = get_config(p, DEFAULTS,'inventory', 'ANSIBLE_INVENTORY', DEPRECATED_HOST_LIST, ispath=True)
 DEFAULT_MODULE_PATH       = get_config(p, DEFAULTS, 'library',          'ANSIBLE_LIBRARY',          None, ispathlist=True)
-DEFAULT_ROLES_PATH        = get_config(p, DEFAULTS, 'roles_path',       'ANSIBLE_ROLES_PATH',       '/etc/ansible/roles', ispathlist=True)
+DEFAULT_ROLES_PATH        = get_config(p, DEFAULTS, 'roles_path',       'ANSIBLE_ROLES_PATH',       '/etc/ansible/roles', ispathlist=True, expand_relative_paths=True)
 DEFAULT_REMOTE_TMP        = get_config(p, DEFAULTS, 'remote_tmp',       'ANSIBLE_REMOTE_TEMP',      '$HOME/.ansible/tmp')
 DEFAULT_LOCAL_TMP         = get_config(p, DEFAULTS, 'local_tmp',        'ANSIBLE_LOCAL_TEMP',      '$HOME/.ansible/tmp', istmppath=True)
 DEFAULT_MODULE_NAME       = get_config(p, DEFAULTS, 'module_name',      None,                       'command')
 DEFAULT_FORKS             = get_config(p, DEFAULTS, 'forks',            'ANSIBLE_FORKS',            5, integer=True)
 DEFAULT_MODULE_ARGS       = get_config(p, DEFAULTS, 'module_args',      'ANSIBLE_MODULE_ARGS',      '')
 DEFAULT_MODULE_LANG       = get_config(p, DEFAULTS, 'module_lang',      'ANSIBLE_MODULE_LANG',      os.getenv('LANG', 'en_US.UTF-8'))
-DEFAULT_MODULE_SET_LOCALE = get_config(p, DEFAULTS, 'module_set_locale','ANSIBLE_MODULE_SET_LOCALE',True, boolean=True)
+DEFAULT_MODULE_SET_LOCALE = get_config(p, DEFAULTS, 'module_set_locale','ANSIBLE_MODULE_SET_LOCALE',False, boolean=True)
 DEFAULT_MODULE_COMPRESSION= get_config(p, DEFAULTS, 'module_compression', None, 'ZIP_DEFLATED')
 DEFAULT_TIMEOUT           = get_config(p, DEFAULTS, 'timeout',          'ANSIBLE_TIMEOUT',          10, integer=True)
 DEFAULT_POLL_INTERVAL     = get_config(p, DEFAULTS, 'poll_interval',    'ANSIBLE_POLL_INTERVAL',    15, integer=True)
@@ -169,6 +180,7 @@ DEFAULT_JINJA2_EXTENSIONS = get_config(p, DEFAULTS, 'jinja2_extensions', 'ANSIBL
 DEFAULT_EXECUTABLE        = get_config(p, DEFAULTS, 'executable', 'ANSIBLE_EXECUTABLE', '/bin/sh')
 DEFAULT_GATHERING         = get_config(p, DEFAULTS, 'gathering', 'ANSIBLE_GATHERING', 'implicit').lower()
 DEFAULT_GATHER_SUBSET     = get_config(p, DEFAULTS, 'gather_subset', 'ANSIBLE_GATHER_SUBSET', 'all').lower()
+DEFAULT_GATHER_TIMEOUT    = get_config(p, DEFAULTS, 'gather_timeout', 'ANSIBLE_GATHER_TIMEOUT', 10, integer=True)
 DEFAULT_LOG_PATH          = get_config(p, DEFAULTS, 'log_path',           'ANSIBLE_LOG_PATH', '', ispath=True)
 DEFAULT_FORCE_HANDLERS    = get_config(p, DEFAULTS, 'force_handlers', 'ANSIBLE_FORCE_HANDLERS', False, boolean=True)
 DEFAULT_INVENTORY_IGNORE  = get_config(p, DEFAULTS, 'inventory_ignore_extensions', 'ANSIBLE_INVENTORY_IGNORE', ["~", ".orig", ".bak", ".ini", ".cfg", ".retry", ".pyc", ".pyo"], islist=True)
@@ -245,7 +257,6 @@ ANSIBLE_NOCOLOR                = get_config(p, DEFAULTS, 'nocolor', 'ANSIBLE_NOC
 ANSIBLE_NOCOWS                 = get_config(p, DEFAULTS, 'nocows', 'ANSIBLE_NOCOWS', None, boolean=True)
 ANSIBLE_COW_SELECTION          = get_config(p, DEFAULTS, 'cow_selection', 'ANSIBLE_COW_SELECTION', 'default')
 ANSIBLE_COW_WHITELIST          = get_config(p, DEFAULTS, 'cow_whitelist', 'ANSIBLE_COW_WHITELIST', DEFAULT_COW_WHITELIST, islist=True)
-DISPLAY_ARGS_TO_STDOUT         = get_config(p, DEFAULTS, 'display_args_to_stdout', 'DISPLAY_ARGS_TO_STDOUT', False, boolean=True)
 DISPLAY_SKIPPED_HOSTS          = get_config(p, DEFAULTS, 'display_skipped_hosts', 'DISPLAY_SKIPPED_HOSTS', True, boolean=True)
 DEFAULT_UNDEFINED_VAR_BEHAVIOR = get_config(p, DEFAULTS, 'error_on_undefined_vars', 'ANSIBLE_ERROR_ON_UNDEFINED_VARS', True, boolean=True)
 HOST_KEY_CHECKING              = get_config(p, DEFAULTS, 'host_key_checking',  'ANSIBLE_HOST_KEY_CHECKING',    True, boolean=True)
@@ -262,7 +273,7 @@ DISPLAY_ARGS_TO_STDOUT         = get_config(p, DEFAULTS, 'display_args_to_stdout
 MAX_FILE_SIZE_FOR_DIFF         = get_config(p, DEFAULTS, 'max_diff_size', 'ANSIBLE_MAX_DIFF_SIZE', 1024*1024, integer=True)
 
 # CONNECTION RELATED
-ANSIBLE_SSH_ARGS               = get_config(p, 'ssh_connection', 'ssh_args', 'ANSIBLE_SSH_ARGS', '-o ControlMaster=auto -o ControlPersist=60s')
+ANSIBLE_SSH_ARGS               = get_config(p, 'ssh_connection', 'ssh_args', 'ANSIBLE_SSH_ARGS', '-C -o ControlMaster=auto -o ControlPersist=60s')
 ANSIBLE_SSH_CONTROL_PATH       = get_config(p, 'ssh_connection', 'control_path', 'ANSIBLE_SSH_CONTROL_PATH', "%(directory)s/ansible-ssh-%%h-%%p-%%r")
 ANSIBLE_SSH_PIPELINING         = get_config(p, 'ssh_connection', 'pipelining', 'ANSIBLE_SSH_PIPELINING', False, boolean=True)
 ANSIBLE_SSH_RETRIES            = get_config(p, 'ssh_connection', 'retries', 'ANSIBLE_SSH_RETRIES', 0, integer=True)
@@ -302,7 +313,7 @@ COLOR_DEPRECATE   = get_config(p, 'colors', 'deprecate', 'ANSIBLE_COLOR_DEPRECAT
 COLOR_SKIP        = get_config(p, 'colors', 'skip', 'ANSIBLE_COLOR_SKIP', 'cyan')
 COLOR_UNREACHABLE = get_config(p, 'colors', 'unreachable', 'ANSIBLE_COLOR_UNREACHABLE', 'bright red')
 COLOR_OK          = get_config(p, 'colors', 'ok', 'ANSIBLE_COLOR_OK', 'green')
-COLOR_CHANGED     = get_config(p, 'colors', 'ok', 'ANSIBLE_COLOR_CHANGED', 'yellow')
+COLOR_CHANGED     = get_config(p, 'colors', 'changed', 'ANSIBLE_COLOR_CHANGED', 'yellow')
 COLOR_DIFF_ADD    = get_config(p, 'colors', 'diff_add', 'ANSIBLE_COLOR_DIFF_ADD', 'green')
 COLOR_DIFF_REMOVE = get_config(p, 'colors', 'diff_remove', 'ANSIBLE_COLOR_DIFF_REMOVE', 'red')
 COLOR_DIFF_LINES  = get_config(p, 'colors', 'diff_lines', 'ANSIBLE_COLOR_DIFF_LINES', 'cyan')

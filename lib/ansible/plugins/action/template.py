@@ -26,7 +26,9 @@ from ansible import constants as C
 from ansible.plugins.action import ActionBase
 from ansible.utils.hashing import checksum_s
 from ansible.utils.boolean import boolean
-from ansible.utils.unicode import to_bytes, to_unicode
+from ansible.utils.unicode import to_bytes, to_unicode, to_str
+from ansible.errors import AnsibleError
+
 
 
 class ActionModule(ActionBase):
@@ -63,23 +65,23 @@ class ActionModule(ActionBase):
         if state is not None:
             result['failed'] = True
             result['msg'] = "'state' cannot be specified on a template"
-            return result
         elif (source is None and faf is not None) or dest is None:
             result['failed'] = True
             result['msg'] = "src and dest are required"
-            return result
-
-        if faf:
+        elif faf:
             source = self._get_first_available_file(faf, task_vars.get('_original_file', None, 'templates'))
             if source is None:
                 result['failed'] = True
                 result['msg'] = "could not find src in first_available_file list"
-                return result
         else:
-            if self._task._role is not None:
-                source = self._loader.path_dwim_relative(self._task._role._role_path, 'templates', source)
-            else:
-                source = self._loader.path_dwim_relative(self._loader.get_basedir(), 'templates', source)
+            try:
+                source = self._find_needle('templates', source)
+            except AnsibleError as e:
+                result['failed'] = True
+                result['msg'] = to_str(e)
+
+        if 'failed' in result:
+            return result
 
         # Expand any user home dir specification
         dest = self._remote_expand_user(dest)
@@ -91,19 +93,20 @@ class ActionModule(ActionBase):
             dest = os.path.join(dest, base)
 
         # template the source data locally & get ready to transfer
+        b_source = to_bytes(source)
         try:
-            with open(source, 'r') as f:
+            with open(b_source, 'r') as f:
                 template_data = to_unicode(f.read())
 
             try:
-                template_uid = pwd.getpwuid(os.stat(source).st_uid).pw_name
+                template_uid = pwd.getpwuid(os.stat(b_source).st_uid).pw_name
             except:
-                template_uid = os.stat(source).st_uid
+                template_uid = os.stat(b_source).st_uid
 
             temp_vars = task_vars.copy()
             temp_vars['template_host']     = os.uname()[1]
             temp_vars['template_path']     = source
-            temp_vars['template_mtime']    = datetime.datetime.fromtimestamp(os.path.getmtime(source))
+            temp_vars['template_mtime']    = datetime.datetime.fromtimestamp(os.path.getmtime(b_source))
             temp_vars['template_uid']      = template_uid
             temp_vars['template_fullpath'] = os.path.abspath(source)
             temp_vars['template_run_date'] = datetime.datetime.now()
@@ -116,7 +119,7 @@ class ActionModule(ActionBase):
             )
             temp_vars['ansible_managed'] = time.strftime(
                 managed_str,
-                time.localtime(os.path.getmtime(source))
+                time.localtime(os.path.getmtime(b_source))
             )
 
             # Create a new searchpath list to assign to the templar environment's file
@@ -164,7 +167,7 @@ class ActionModule(ActionBase):
                 xfered = self._transfer_data(self._connection._shell.join_path(tmp, 'source'), resultant)
 
                 # fix file permissions when the copy is done as a different user
-                self._fixup_perms(tmp, remote_user, recursive=True)
+                self._fixup_perms((tmp, xfered), remote_user)
 
                 # run the copy module
                 new_module_args.update(

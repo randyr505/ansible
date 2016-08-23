@@ -18,7 +18,6 @@ from __future__ import (absolute_import, division, print_function)
 __metaclass__ = type
 
 from ansible.plugins.action import ActionBase
-from ansible.utils.boolean import boolean
 from ansible.utils.unicode import to_unicode
 from ansible.errors import AnsibleUndefinedVariable
 
@@ -54,7 +53,11 @@ class ActionModule(ActionBase):
                 try:
                     results = self._templar.template(self._task.args['var'], convert_bare=True, fail_on_undefined=True, bare_deprecated=False)
                     if results == self._task.args['var']:
-                        raise AnsibleUndefinedVariable
+                        # if results is not str/unicode type, raise an exception
+                        if type(results) not in [str, unicode]:
+                            raise AnsibleUndefinedVariable
+                        # If var name is same as result, try to template it
+                        results = self._templar.template("{{" + results + "}}", convert_bare=True, fail_on_undefined=True)
                 except AnsibleUndefinedVariable:
                     results = "VARIABLE IS NOT DEFINED!"
 
@@ -69,6 +72,7 @@ class ActionModule(ActionBase):
             # force flag to make debug output module always verbose
             result['_ansible_verbose_always'] = True
         else:
+            result['skipped_reason'] = "Verbosity threshold not met."
             result['skipped'] = True
 
         return result

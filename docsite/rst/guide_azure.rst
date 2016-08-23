@@ -8,12 +8,12 @@ Requirements
 ------------
 
 Using the Azure Resource Manager modules requires having `Azure Python SDK <https://github.com/Azure/azure-sdk-for-python>`_
-installed on the host running Ansible. You will need to have >= v2.0.0RC2 installed. The simplest way to install the
+installed on the host running Ansible. You will need to have == v2.0.0RC5 installed. The simplest way to install the
 SDK is via pip:
 
 .. code-block:: bash
 
-    $ pip install azure==2.0.0rc2
+    $ pip install "azure==2.0.0rc5"
 
 
 Authenticating with Azure
@@ -320,6 +320,10 @@ Select hosts for specific tag key by assigning a comma separated list of tag key
 
 * AZURE_TAGS=key1,key2,key3
 
+Select hosts for specific locations by assigning a comma separated list of locations to:
+
+* AZURE_LOCATIONS=eastus,eastus2,westus
+
 Or, select hosts for specific tag key:value pairs by assigning a comma separated list key:value pairs to:
 
 * AZURE_TAGS=key1:value1,key2:value2
@@ -332,6 +336,7 @@ A sample azure_rm.ini file is included along with the inventory script in contri
 file will contain the following:
 
 .. code-block:: ini
+
     [azure]
     # Control which resource groups are included. By default all resources groups are included.
     # Set resource_groups to a comma separated list of resource groups names.
@@ -339,6 +344,9 @@ file will contain the following:
 
     # Control which tags are included. Set tags to a comma separated list of keys or key:value pairs
     #tags=
+
+    # Control which locations are included. Set locations to a comma separated list of locations.
+    #locations=
 
     # Include powerstate. If you don't need powerstate information, turning it off improves runtime performance.
     # Valid values: yes, no, true, false, True, False, 0, 1.

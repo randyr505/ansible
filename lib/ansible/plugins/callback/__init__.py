@@ -89,7 +89,7 @@ class CallbackBase:
         if result.get('_ansible_no_log', False):
             return json.dumps(dict(censored="the output has been hidden due to the fact that 'no_log: true' was specified for this result"))
 
-        if not indent and '_ansible_verbose_always' in result and result['_ansible_verbose_always']:
+        if not indent and (result.get('_ansible_verbose_always') or self._display.verbosity > 2):
             indent = 4
 
         # All result keys stating with _ansible_ are internal, so remove them from the result before we output anything.
@@ -102,6 +102,10 @@ class CallbackBase:
         # remove diff information from screen output
         if self._display.verbosity < 3 and 'diff' in result:
             del abridged_result['diff']
+
+        # remove exception from screen output
+        if 'exception' in abridged_result:
+            del abridged_result['exception']
 
         return json.dumps(abridged_result, indent=indent, ensure_ascii=False, sort_keys=sort_keys)
 
@@ -309,7 +313,7 @@ class CallbackBase:
         self.playbook_on_no_hosts_remaining()
 
     def v2_playbook_on_task_start(self, task, is_conditional):
-        self.playbook_on_task_start(task, is_conditional)
+        self.playbook_on_task_start(task.name, is_conditional)
 
     def v2_playbook_on_cleanup_task_start(self, task):
         pass #no v1 correspondance

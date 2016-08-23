@@ -65,7 +65,7 @@ For numeric patterns, leading zeros can be included or removed, as desired. Rang
     db-[a:f].example.com
 
 
-.. include:: ansible_ssh_changes_note.rst
+.. include:: ../rst_common/ansible_ssh_changes_note.rst
 
 You can also select the connection type and user on a per host basis:
 
@@ -203,10 +203,10 @@ As alluded to above, setting the following variables controls how ansible intera
 Host connection:
 
 ansible_connection
-    Connection type to the host. This can be the name of any of ansible's connection plugins. SSH protocol types are smart, ssh or paramiko.  The default is smart. Non-SSH based types are described in the next section.
+    Connection type to the host. This can be the name of any of ansible's connection plugins. SSH protocol types are ``smart``, ``ssh`` or ``paramiko``.  The default is smart. Non-SSH based types are described in the next section.
 
 
-.. include:: ansible_ssh_changes_note.rst
+.. include:: ../rst_common/ansible_ssh_changes_note.rst
 
 SSH connection:
 
@@ -242,7 +242,7 @@ ansible_become_method
 ansible_become_user
     Equivalent to ``ansible_sudo_user`` or ``ansible_su_user``, allows to set the user you become through privilege escalation
 ansible_become_pass
-    Equivalent to ``ansible_sudo_pass`` or ``ansible_su_pass``, allows you to set the privilege escalation password
+    Equivalent to ``ansible_sudo_pass`` or ``ansible_su_pass``, allows you to set the privilege escalation password (this is insecure, we strongly recommend using :option:`--ask-become-pass` or SSH keys)
 
 Remote host environment parameters:
 
@@ -300,7 +300,7 @@ ansible_become
 ansible_docker_extra_args
     Could be a string with any additional arguments understood by Docker, which are not command specific. This parameter is mainly used to configure a remote Docker daemon to use.
 
-Here an example of how to instantly depoloy to created containers::
+Here is an example of how to instantly deploy to created containers::
 
   - name: create jenkins container
     docker:

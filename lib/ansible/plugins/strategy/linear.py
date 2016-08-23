@@ -157,13 +157,13 @@ class StrategyModule(StrategyBase):
         '''
 
         # iteratate over each task, while there is one left to run
-        result     = True
+        result = self._tqm.RUN_OK
         work_to_do = True
         while work_to_do and not self._tqm._terminated:
 
             try:
                 display.debug("getting the remaining hosts for this loop")
-                hosts_left = [host for host in self._inventory.get_hosts(iterator._play.hosts) if host.name not in self._tqm._unreachable_hosts and not iterator.is_failed(host)]
+                hosts_left = [host for host in self._inventory.get_hosts(iterator._play.hosts) if host.name not in self._tqm._unreachable_hosts]
                 display.debug("done getting the remaining hosts for this loop")
 
                 # queue up this task for each host in the inventory
@@ -230,7 +230,7 @@ class StrategyModule(StrategyBase):
 
                         run_once = templar.template(task.run_once) or action and getattr(action, 'BYPASS_HOST_LOOP', False)
 
-                        if task.any_errors_fatal or run_once:
+                        if (task.any_errors_fatal or run_once) and not task.ignore_errors:
                             any_errors_fatal = True
 
                         if not callback_sent:
@@ -253,6 +253,7 @@ class StrategyModule(StrategyBase):
 
                         self._blocked_hosts[host.get_name()] = True
                         self._queue_task(host, task, task_vars, play_context)
+                        del task_vars
 
                     # if we're bypassing the host loop, break out now
                     if run_once:
@@ -268,12 +269,6 @@ class StrategyModule(StrategyBase):
                 results += self._wait_on_pending_results(iterator)
                 host_results.extend(results)
 
-                if not work_to_do and len(iterator.get_failed_hosts()) > 0:
-                    display.debug("out of hosts to run on")
-                    self._tqm.send_callback('v2_playbook_on_no_hosts_remaining')
-                    result = False
-                    break
-
                 try:
                     included_files = IncludedFile.process_include_results(
                         host_results,
@@ -284,7 +279,8 @@ class StrategyModule(StrategyBase):
                         variable_manager=self._variable_manager
                     )
                 except AnsibleError as e:
-                    return False
+                    # this is a fatal error, so we abort here regardless of block state
+                    return self._tqm.RUN_ERROR
 
                 include_failure = False
                 if len(included_files) > 0:
@@ -315,7 +311,7 @@ class StrategyModule(StrategyBase):
                                 final_block = new_block.filter_tagged_tasks(play_context, task_vars)
                                 display.debug("done filtering new block on tags")
 
-                                noop_block = Block(parent_block=task._block)
+                                noop_block = Block(parent_block=task._parent)
                                 noop_block.block  = [noop_task for t in new_block.block]
                                 noop_block.always = [noop_task for t in new_block.always]
                                 noop_block.rescue = [noop_task for t in new_block.rescue]
@@ -349,24 +345,41 @@ class StrategyModule(StrategyBase):
 
                 display.debug("checking for any_errors_fatal")
                 failed_hosts = []
+                unreachable_hosts = []
                 for res in results:
-                    if res.is_failed() or res.is_unreachable():
+                    if res.is_failed():
                         failed_hosts.append(res._host.name)
+                    elif res.is_unreachable():
+                        unreachable_hosts.append(res._host.name)
 
                 # if any_errors_fatal and we had an error, mark all hosts as failed
-                if any_errors_fatal and len(failed_hosts) > 0:
+                if any_errors_fatal and (len(failed_hosts) > 0 or len(unreachable_hosts) > 0):
                     for host in hosts_left:
-                        # don't double-mark hosts, or the iterator will potentially
-                        # fail them out of the rescue/always states
-                        if host.name not in failed_hosts:
+                        (s, _) = iterator.get_next_task_for_host(host, peek=True)
+                        if s.run_state != iterator.ITERATING_RESCUE:
                             self._tqm._failed_hosts[host.name] = True
-                            iterator.mark_host_failed(host)
+                            result |= self._tqm.RUN_FAILED_BREAK_PLAY
                 display.debug("done checking for any_errors_fatal")
+
+                display.debug("checking for max_fail_percentage")
+                if iterator._play.max_fail_percentage is not None and len(results) > 0:
+                    percentage = iterator._play.max_fail_percentage / 100.0
+
+                    if (len(self._tqm._failed_hosts) / len(results)) > percentage:
+                        for host in hosts_left:
+                            # don't double-mark hosts, or the iterator will potentially
+                            # fail them out of the rescue/always states
+                            if host.name not in failed_hosts:
+                                self._tqm._failed_hosts[host.name] = True
+                                iterator.mark_host_failed(host)
+                        self._tqm.send_callback('v2_playbook_on_no_hosts_remaining')
+                        result |= self._tqm.RUN_FAILED_BREAK_PLAY
+                display.debug("done checking for max_fail_percentage")
 
             except (IOError, EOFError) as e:
                 display.debug("got IOError/EOFError in task loop: %s" % e)
                 # most likely an abort, return failed
-                return False
+                return self._tqm.RUN_UNKNOWN_ERROR
 
         # run the base class run() method, which executes the cleanup function
         # and runs any outstanding handlers which have been triggered

@@ -30,7 +30,7 @@ import getpass
 import signal
 import subprocess
 
-from ansible import __version__
+from ansible.release import __version__
 from ansible import constants as C
 from ansible.errors import AnsibleError, AnsibleOptionsError
 from ansible.utils.unicode import to_bytes, to_unicode
@@ -90,7 +90,10 @@ class CLI(object):
                 break
 
         if not self.action:
-            raise AnsibleOptionsError("Missing required action")
+            # if no need for action if version/help
+            tmp_options, tmp_args = self.parser.parse_args()
+            if not(hasattr(tmp_options, 'help') and tmp_options.help) or (hasattr(tmp_options, 'version') and tmp_options.version):
+                raise AnsibleOptionsError("Missing required action")
 
     def execute(self):
         """
@@ -476,7 +479,7 @@ class CLI(object):
                 display.display(text)
             else:
                 self.pager_pipe(text, os.environ['PAGER'])
-        elif subprocess.call('(less --version) 2> /dev/null', shell = True) == 0:
+        elif subprocess.call('(less --version) &> /dev/null', shell = True) == 0:
             self.pager_pipe(text, 'less')
         else:
             display.display(text)

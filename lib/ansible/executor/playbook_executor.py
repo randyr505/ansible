@@ -27,7 +27,9 @@ from ansible import constants as C
 from ansible.executor.task_queue_manager import TaskQueueManager
 from ansible.playbook import Playbook
 from ansible.template import Templar
-from ansible.utils.unicode import to_unicode
+from ansible.utils.helpers import pct_to_int
+from ansible.utils.path import makedirs_safe
+from ansible.utils.unicode import to_unicode, to_str
 
 try:
     from __main__ import display
@@ -70,7 +72,7 @@ class PlaybookExecutor:
         try:
             for playbook_path in self._playbooks:
                 pb = Playbook.load(playbook_path, variable_manager=self._variable_manager, loader=self._loader)
-                self._inventory.set_playbook_basedir(os.path.dirname(playbook_path))
+                self._inventory.set_playbook_basedir(os.path.realpath(os.path.dirname(playbook_path)))
 
                 if self._tqm is None: # we are doing a listing
                     entry = {'playbook': playbook_path}
@@ -128,6 +130,10 @@ class PlaybookExecutor:
                     else:
                         self._tqm._unreachable_hosts.update(self._unreachable_hosts)
 
+                        previously_failed = len(self._tqm._failed_hosts)
+                        previously_unreachable = len(self._tqm._unreachable_hosts)
+
+                        break_play = False
                         # we are actually running plays
                         for batch in self._get_serialized_batches(new_play):
                             if len(batch) == 0:
@@ -140,24 +146,31 @@ class PlaybookExecutor:
                             # and run it...
                             result = self._tqm.run(play=play)
 
+                            # break the play if the result equals the special return code
+                            if result & self._tqm.RUN_FAILED_BREAK_PLAY != 0:
+                                result = self._tqm.RUN_FAILED_HOSTS
+                                break_play = True
+
                             # check the number of failures here, to see if they're above the maximum
                             # failure percentage allowed, or if any errors are fatal. If either of those
                             # conditions are met, we break out, otherwise we only break out if the entire
                             # batch failed
-                            failed_hosts_count = len(self._tqm._failed_hosts) + len(self._tqm._unreachable_hosts)
-                            if new_play.max_fail_percentage is not None and \
-                               int((new_play.max_fail_percentage)/100.0 * len(batch)) > int((len(batch) - failed_hosts_count) / len(batch) * 100.0):
-                                break
-                            elif len(batch) == failed_hosts_count:
+                            failed_hosts_count = len(self._tqm._failed_hosts) + len(self._tqm._unreachable_hosts) - \
+                                                 (previously_failed + previously_unreachable)
+
+                            if len(batch) == failed_hosts_count:
+                                break_play = True
                                 break
 
-                            # clear the failed hosts dictionaires in the TQM for the next batch
+                            # update the previous counts so they don't accumulate incorrectly
+                            # over multiple serial batches
+                            previously_failed += len(self._tqm._failed_hosts) - previously_failed
+                            previously_unreachable += len(self._tqm._unreachable_hosts) - previously_unreachable
+
+                            # save the unreachable hosts from this batch
                             self._unreachable_hosts.update(self._tqm._unreachable_hosts)
-                            self._tqm.clear_failed_hosts()
 
-                        # if the last result wasn't zero or 3 (some hosts were unreachable),
-                        # break out of the serial batch loop
-                        if result not in (0, 3):
+                        if break_play:
                             break
 
                     i = i + 1 # per play
@@ -174,8 +187,10 @@ class PlaybookExecutor:
                         if len(retries) > 0:
                             if C.RETRY_FILES_SAVE_PATH:
                                 basedir = C.shell_expand(C.RETRY_FILES_SAVE_PATH)
-                            else:
+                            elif playbook_path:
                                 basedir = os.path.dirname(playbook_path)
+                            else:
+                                basedir = '~/'
 
                             (retry_name, _) = os.path.splitext(os.path.basename(playbook_path))
                             filename = os.path.join(basedir, "%s.retry" % retry_name)
@@ -211,27 +226,28 @@ class PlaybookExecutor:
 
         # make sure we have a unique list of hosts
         all_hosts = self._inventory.get_hosts(play.hosts)
+        all_hosts_len = len(all_hosts)
 
-        # check to see if the serial number was specified as a percentage,
-        # and convert it to an integer value based on the number of hosts
-        if isinstance(play.serial, string_types) and play.serial.endswith('%'):
-            serial_pct = int(play.serial.replace("%",""))
-            serial = int((serial_pct/100.0) * len(all_hosts)) or 1
-        else:
-            if play.serial is None:
-                serial = -1
+        # the serial value can be listed as a scalar or a list of
+        # scalars, so we make sure it's a list here
+        serial_batch_list = play.serial
+        if len(serial_batch_list) == 0:
+            serial_batch_list = [-1]
+
+        cur_item = 0
+        serialized_batches = []
+
+        while len(all_hosts) > 0:
+            # get the serial value from current item in the list
+            serial = pct_to_int(serial_batch_list[cur_item], all_hosts_len)
+
+            # if the serial count was not specified or is invalid, default to
+            # a list of all hosts, otherwise grab a chunk of the hosts equal
+            # to the current serial item size
+            if serial <= 0:
+                serialized_batches.append(all_hosts)
+                break
             else:
-                serial = int(play.serial)
-
-        # if the serial count was not specified or is invalid, default to
-        # a list of all hosts, otherwise split the list of hosts into chunks
-        # which are based on the serial size
-        if serial <= 0:
-            return [all_hosts]
-        else:
-            serialized_batches = []
-
-            while len(all_hosts) > 0:
                 play_hosts = []
                 for x in range(serial):
                     if len(all_hosts) > 0:
@@ -239,7 +255,14 @@ class PlaybookExecutor:
 
                 serialized_batches.append(play_hosts)
 
-            return serialized_batches
+            # increment the current batch list item number, and if we've hit
+            # the end keep using the last element until we've consumed all of
+            # the hosts in the inventory
+            cur_item += 1
+            if cur_item > len(serial_batch_list) - 1:
+                cur_item = len(serial_batch_list) - 1
+
+        return serialized_batches
 
     def _generate_retry_inventory(self, retry_path, replay_hosts):
         '''
@@ -247,13 +270,13 @@ class PlaybookExecutor:
         re-running on ONLY the failed hosts.  This may duplicate some variable
         information in group_vars/host_vars but that is ok, and expected.
         '''
-
         try:
+            makedirs_safe(os.path.dirname(retry_path))
             with open(retry_path, 'w') as fd:
                 for x in replay_hosts:
                     fd.write("%s\n" % x)
         except Exception as e:
-            display.error("Could not create retry file '%s'. The error was: %s" % (retry_path, e))
+            display.warning("Could not create retry file '%s'.\n\t%s" % (retry_path, to_str(e)))
             return False
 
         return True

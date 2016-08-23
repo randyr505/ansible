@@ -19,6 +19,7 @@
 from __future__ import (absolute_import, division, print_function)
 __metaclass__ = type
 
+import errno
 import fcntl
 import os
 import pipes
@@ -133,11 +134,13 @@ class Connection(ConnectionBase):
         ## Next, additional arguments based on the configuration.
 
         # sftp batch mode allows us to correctly catch failed transfers, but can
-        # be disabled if the client side doesn't support the option.
+        # be disabled if the client side doesn't support the option. However,
+        # sftp batch mode does not prompt for passwords so it must be disabled
+        # if not using controlpersist and using sshpass
         if binary == 'sftp' and C.DEFAULT_SFTP_BATCH_MODE:
+            if self._play_context.password:
+                self._add_args('disable batch mode for sshpass', ['-o', 'BatchMode=no'])
             self._command += ['-b', '-']
-
-        self._command += ['-C']
 
         if self._play_context.verbosity > 3:
             self._command += ['-vvv']
@@ -344,7 +347,12 @@ class Connection(ConnectionBase):
 
         if self._play_context.password:
             os.close(self.sshpass_pipe[0])
-            os.write(self.sshpass_pipe[1], "{0}\n".format(to_bytes(self._play_context.password)))
+            try:
+                os.write(self.sshpass_pipe[1], "{0}\n".format(to_bytes(self._play_context.password)))
+            except OSError as e:
+                # Ignore broken pipe errors if the sshpass process has exited.
+                if e.errno != errno.EPIPE or p.poll() is None:
+                    raise
             os.close(self.sshpass_pipe[1])
 
         ## SSH state machine

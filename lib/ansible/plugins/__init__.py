@@ -136,7 +136,7 @@ class PluginLoader:
     def _all_directories(self, dir):
         results = []
         results.append(dir)
-        for root, subdirs, files in os.walk(dir):
+        for root, subdirs, files in os.walk(dir, followlinks=True):
            if '__init__.py' in files:
                for x in subdirs:
                    results.append(os.path.join(root,x))
@@ -145,15 +145,15 @@ class PluginLoader:
     def _get_package_paths(self):
         ''' Gets the path of a Python package '''
 
-        paths = []
         if not self.package:
             return []
         if not hasattr(self, 'package_path'):
             m = __import__(self.package)
             parts = self.package.split('.')[1:]
-            self.package_path = os.path.join(os.path.dirname(m.__file__), *parts)
-        paths.extend(self._all_directories(self.package_path))
-        return paths
+            for parent_mod in parts:
+                m = getattr(m, parent_mod)
+            self.package_path = os.path.dirname(m.__file__)
+        return self._all_directories(self.package_path)
 
     def _get_paths(self):
         ''' Return a list of paths to search for plugins in '''
@@ -371,6 +371,7 @@ class PluginLoader:
                 obj = getattr(self._module_cache[path], self.class_name)
             except AttributeError as e:
                 display.warning("Skipping plugin (%s) as it seems to be invalid: %s" % (path, to_unicode(e)))
+                continue
 
             if self.base_class:
                 # The import path is hardcoded and should be the right place,
